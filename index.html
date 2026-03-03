@@ -3,22 +3,245 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EKS 배포 성공!</title>
+    <title>Grid Guardian - 타워 디펜스</title>
     <style>
-        body { font-family: 'Arial', sans-serif; background-color: #f4f7f6; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-        .card { background: white; padding: 2rem; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); text-align: center; }
-        h1 { color: #2c3e50; margin-bottom: 1rem; }
-        p { color: #7f8c8d; font-size: 1.2rem; }
-        .icon { font-size: 4rem; margin-bottom: 1rem; }
-        .status { color: #27ae60; font-weight: bold; }
+        body { font-family: 'Courier New', Courier, monospace; background-color: #2c3e50; color: #ecf0f1; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .game-container { position: relative; border: 4px solid #34495e; box-shadow: 0 10px 20px rgba(0,0,0,0.5); background-color: #ecf0f1; }
+        canvas { display: block; background-color: #27ae60; cursor: crosshair; }
+        #ui { position: absolute; top: 10px; right: 10px; padding: 10px; background: rgba(44, 62, 80, 0.8); border-radius: 5px; text-align: right; }
+        .stat { margin-bottom: 5px; font-weight: bold; }
+        #lives { color: #e74c3c; }
+        #gold { color: #f1c40f; }
+        #controls { position: absolute; bottom: 10px; left: 10px; padding: 10px; background: rgba(44, 62, 80, 0.8); border-radius: 5px; display: flex; gap: 10px; }
+        .tower-btn { padding: 5px 10px; background: #3498db; color: white; border: none; border-radius: 3px; cursor: pointer; }
+        .tower-btn.selected { background: #2980b9; box-shadow: inset 0 2px 4px rgba(0,0,0,0.3); }
     </style>
 </head>
 <body>
-    <div class="card">
-        <div class="icon">🚀</div>
-        <h1>EKS 배포 성공!</h1>
-        <p>GitHub Actions를 통한 자동 배포가 완료되었습니다.</p>
-        <p class="status">현재 서비스: Nginx 기반 웹 애플리케이션</p>
+    <div class="game-container">
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+        <div id="ui">
+            <div class="stat">웨이브: <span id="wave">1</span></div>
+            <div class="stat" id="lives">체력: 20</div>
+            <div class="stat" id="gold">골드: 100</div>
+        </div>
+        <div id="controls">
+            <button id="basicTowerBtn" class="tower-btn selected" onclick="selectTower('basic')">기본 타워 (50G)</button>
+            <button id="waveTowerBtn" class="tower-btn" onclick="selectTower('wave')">웨이브 타워 (80G)</button>
+            <button onclick="startWave()">웨이브 시작!</button>
+        </div>
     </div>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const tile = 40;
+        const rows = canvas.height / tile;
+        const cols = canvas.width / tile;
+
+        const gameState = {
+            wave: 1,
+            lives: 20,
+            gold: 100,
+            waveInProgress: false,
+            selectedTowerType: 'basic',
+            enemiesInWave: 0,
+            enemiesSpawned: 0,
+            gameOver: false,
+            win: false
+        };
+
+        const map = {
+            path: [[0, 7], [1, 7], [2, 7], [3, 7], [4, 7], [5, 7], [5, 8], [5, 9], [6, 9], [7, 9], [8, 9], [9, 9], [10, 9], [11, 9], [12, 9], [13, 9], [13, 8], [13, 7], [13, 6], [14, 6], [15, 6], [16, 6], [17, 6], [18, 6], [19, 6]],
+            getTileColor(x, y) {
+                if (x === this.path[0][0] && y === this.path[0][1]) return '#3498db'; // Entrance
+                if (x === this.path[this.path.length-1][0] && y === this.path[this.path.length-1][1]) return '#e74c3c'; // Exit
+                if (this.path.some(p => p[0] === x && p[1] === y)) return '#bdc3c7'; // Path
+                return '#27ae60'; // Grass
+            },
+            isPath(x, y) { return this.path.some(p => p[0] === x && p[1] === y); }
+        };
+
+        class Enemy {
+            constructor(type) {
+                this.x = map.path[0][0] * tile;
+                this.y = map.path[0][1] * tile;
+                this.pathIndex = 0;
+                this.speed = type === 'fast' ? 2 : 1;
+                this.maxHp = 10 * Math.pow(gameState.wave, 1.2) * (type === 'boss' ? 5 : 1);
+                this.hp = this.maxHp;
+                this.goldReward = 5 * (type === 'boss' ? 5 : 1);
+                this.radius = tile * 0.3;
+                this.color = type === 'boss' ? '#8e44ad' : type === 'fast' ? '#d35400' : '#c0392b';
+                this.removed = false;
+            }
+            update() {
+                if (this.removed) return;
+                let targetX = map.path[this.pathIndex + 1][0] * tile;
+                let targetY = map.path[this.pathIndex + 1][1] * tile;
+                let dx = targetX - this.x;
+                let dy = targetY - this.y;
+                let dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < this.speed) {
+                    this.x = targetX;
+                    this.y = targetY;
+                    this.pathIndex++;
+                    if (this.pathIndex >= map.path.length - 1) {
+                        gameState.lives--;
+                        this.removed = true;
+                        if (gameState.lives <= 0) endGame(false);
+                        return;
+                    }
+                } else {
+                    this.x += (dx / dist) * this.speed;
+                    this.y += (dy / dist) * this.speed;
+                }
+            }
+            draw() {
+                if (this.removed) return;
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x + tile/2, this.y + tile/2, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+                // Health bar
+                ctx.fillStyle = '#c0392b';
+                ctx.fillRect(this.x + tile/2 - this.radius, this.y + tile/2 - this.radius - 5, this.radius * 2, 3);
+                ctx.fillStyle = '#2ecc71';
+                ctx.fillRect(this.x + tile/2 - this.radius, this.y + tile/2 - this.radius - 5, (this.radius * 2) * (this.hp / this.maxHp), 3);
+            }
+            hit(damage) {
+                this.hp -= damage;
+                if (this.hp <= 0 && !this.removed) {
+                    this.removed = true;
+                    gameState.gold += this.goldReward;
+                    updateUI();
+                }
+            }
+        }
+
+        class Projectile {
+            constructor(x, y, target, damage) {
+                this.x = x; this.y = y; this.target = target; this.damage = damage;
+                this.speed = 5; this.radius = 3; this.color = '#f1c40f'; this.removed = false;
+            }
+            update() {
+                if (this.removed || this.target.removed) { this.removed = true; return; }
+                let dx = (this.target.x + tile/2) - this.x;
+                let dy = (this.target.y + tile/2) - this.y;
+                let dist = Math.sqrt(dx*dx + dy*dy);
+                if (dist < this.speed) { this.target.hit(this.damage); this.removed = true; }
+                else { this.x += (dx/dist)*this.speed; this.y += (dy/dist)*this.speed; }
+            }
+            draw() {
+                if (this.removed) return;
+                ctx.fillStyle = this.color; ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI*2); ctx.fill();
+            }
+        }
+
+        class Tower {
+            constructor(gridX, gridY, type) {
+                this.gridX = gridX; this.gridY = gridY;
+                this.x = gridX * tile; this.y = gridY * tile;
+                this.type = type;
+                this.range = type === 'basic' ? tile * 3.5 : tile * 2;
+                this.damage = type === 'basic' ? 5 : 2;
+                this.fireRate = type === 'basic' ? 1000 : 500; // ms
+                this.lastShot = 0;
+                this.color = type === 'basic' ? '#2980b9' : '#16a085';
+            }
+            draw() {
+                ctx.fillStyle = this.color; ctx.fillRect(this.x + 5, this.y + 5, tile - 10, tile - 10);
+                if (this.gridX === gameState.selectedTowerPos?.x && this.gridY === gameState.selectedTowerPos?.y) {
+                    ctx.strokeStyle = 'white'; ctx.lineWidth = 2; ctx.strokeRect(this.x + 5, this.y + 5, tile - 10, tile - 10);
+                    ctx.fillStyle = 'rgba(255,255,255,0.1)'; ctx.beginPath(); ctx.arc(this.x + tile/2, this.y + tile/2, this.range, 0, Math.PI*2); ctx.fill();
+                }
+            }
+            update(currentTime) {
+                if (currentTime - this.lastShot < this.fireRate) return;
+                let target = null; let minLife = Infinity;
+                enemies.forEach(e => {
+                    let dx = (e.x + tile/2) - (this.x + tile/2);
+                    let dy = (e.y + tile/2) - (this.y + tile/2);
+                    let dist = Math.sqrt(dx*dx + dy*dy);
+                    if (dist <= this.range && e.maxHp - e.hp < minLife) { minLife = e.maxHp - e.hp; target = e; }
+                });
+                if (target) {
+                    if (this.type === 'basic') projectiles.push(new Projectile(this.x + tile/2, this.y + tile/2, target, this.damage));
+                    else enemies.filter(e => { let dx = (e.x+tile/2)-(this.x+tile/2), dy = (e.y+tile/2)-(this.y+tile/2); return Math.sqrt(dx*dx+dy*dy) <= this.range; }).forEach(e => e.hit(this.damage));
+                    this.lastShot = currentTime;
+                }
+            }
+        }
+
+        const towers = []; const enemies = []; const projectiles = [];
+        const towerConfigs = { basic: { cost: 50 }, wave: { cost: 80 } };
+
+        canvas.addEventListener('click', e => {
+            const rect = canvas.getBoundingClientRect();
+            const gridX = Math.floor((e.clientX - rect.left) / tile);
+            const gridY = Math.floor((e.clientY - rect.top) / tile);
+            if (!map.isPath(gridX, gridY) && !towers.some(t => t.gridX === gridX && t.gridY === gridY)) {
+                if (gameState.gold >= towerConfigs[gameState.selectedTowerType].cost) {
+                    gameState.gold -= towerConfigs[gameState.selectedTowerType].cost;
+                    towers.push(new Tower(gridX, gridY, gameState.selectedTowerType));
+                    updateUI();
+                }
+            }
+            else towers.forEach(t => { if (t.gridX === gridX && t.gridY === gridY) gameState.selectedTowerPos = {x: gridX, y: gridY}; });
+        });
+
+        function selectTower(type) {
+            gameState.selectedTowerType = type;
+            document.querySelectorAll('.tower-btn').forEach(b => b.classList.remove('selected'));
+            document.getElementById(type + 'TowerBtn').classList.add('selected');
+        }
+
+        function startWave() {
+            if (gameState.waveInProgress || gameState.gameOver) return;
+            gameState.waveInProgress = true;
+            gameState.enemiesInWave = 10 + (gameState.wave - 1) * 2;
+            gameState.enemiesSpawned = 0;
+            spawnNextEnemy();
+            updateUI();
+        }
+
+        function spawnNextEnemy() {
+            if (gameState.enemiesSpawned < gameState.enemiesInWave && gameState.waveInProgress) {
+                let type = 'normal';
+                if (gameState.enemiesSpawned % 5 === 4) type = 'fast';
+                if (gameState.enemiesSpawned === gameState.enemiesInWave - 1 && gameState.wave % 5 === 0) type = 'boss';
+                enemies.push(new Enemy(type));
+                gameState.enemiesSpawned++;
+                setTimeout(spawnNextEnemy, 1000 - gameState.wave * 10 > 200 ? 1000 - gameState.wave * 10 : 200);
+            }
+        }
+
+        function updateUI() {
+            document.getElementById('wave').textContent = gameState.wave;
+            document.getElementById('lives').textContent = '체력: ' + gameState.lives;
+            document.getElementById('gold').textContent = '골드: ' + gameState.gold;
+        }
+
+        function endGame(win) {
+            gameState.gameOver = true; gameState.win = win; gameState.waveInProgress = false;
+        }
+
+        function gameLoop(currentTime) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            for (let x = 0; x < cols; x++) for (let y = 0; y < rows; y++) { ctx.fillStyle = map.getTileColor(x, y); ctx.fillRect(x * tile, y * tile, tile, tile); }
+            towers.forEach(t => { t.update(currentTime); t.draw(); });
+            for (let i = enemies.length - 1; i >= 0; i--) { enemies[i].update(); enemies[i].draw(); if (enemies[i].removed) enemies.splice(i, 1); }
+            for (let i = projectiles.length - 1; i >= 0; i--) { projectiles[i].update(); projectiles[i].draw(); if (projectiles[i].removed) projectiles.splice(i, 1); }
+            if (gameState.waveInProgress && enemies.length === 0 && gameState.enemiesSpawned >= gameState.enemiesInWave) {
+                gameState.waveInProgress = false; gameState.wave++; if (gameState.wave > 15) endGame(true); else updateUI();
+            }
+            if (gameState.gameOver) {
+                ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.fillStyle = 'white'; ctx.font = '50px Courier New'; ctx.textAlign = 'center'; ctx.fillText(gameState.win ? 'YOU WIN!' : 'GAME OVER', canvas.width/2, canvas.height/2);
+            } else requestAnimationFrame(gameLoop);
+        }
+
+        updateUI();
+        requestAnimationFrame(gameLoop);
+    </script>
 </body>
 </html>
